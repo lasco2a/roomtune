@@ -1,15 +1,26 @@
-import { useState, useCallback } from 'react';
-import { Mic, Play, Square, CheckCircle2, Circle, RotateCcw } from 'lucide-react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { Mic, Play, Square, CheckCircle2, Circle, RotateCcw, Loader2 } from 'lucide-react';
 import { Card, Button, LevelMeter } from '../ui';
 import { useMeasurement } from '../../hooks/useMeasurement';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { useWizard } from '../../hooks/useWizard';
 import { api } from '../../hooks/useAPI';
-import type { Channel } from '../../types';
+import type { Channel, MeasurementStatus } from '../../types';
 
 interface MeasurementStepProps {
   onComplete: () => void;
 }
+
+/** Human-friendly labels for measurement status phases. */
+const STATUS_LABELS: Record<string, string> = {
+  starting: 'Preparing measurement...',
+  uploading: 'Uploading sweep to RPi...',
+  recording: 'Recording from UMIK-1...',
+  playing: 'Playing sweep through speakers...',
+  processing: 'Processing recording...',
+  complete: 'Measurement complete!',
+  error: 'Measurement failed',
+};
 
 export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const wizard = useWizard();
@@ -31,6 +42,8 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const [peakDb, setPeakDb] = useState(-60);
   const [clipped, setClipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autoStatus, setAutoStatus] = useState<MeasurementStatus | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useWebSocket({
     onLevel: (rms, peak, clip) => {
@@ -40,47 +53,117 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
     },
   });
 
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  /** Poll the backend for measurement progress (auto mode). */
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await api.getMeasurementStatus();
+        setAutoStatus(status);
+
+        // Update level meter from poll too (backup if WebSocket lags)
+        if (status.measuring) {
+          setRmsDb(status.level_rms_db);
+          setPeakDb(status.level_peak_db);
+          setClipped(status.level_clipped);
+        }
+
+        // Handle completion
+        if (status.status === 'complete' && !status.measuring) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          setMeasuring(false);
+
+          // Mark position complete
+          markComplete(status.position_id ?? 0, {
+            position_id: status.position_id ?? 0,
+            channel: (status.channel ?? currentChannel) as Channel,
+            peak_db: status.level_peak_db,
+            clipped: status.level_clipped,
+            duration: 6,
+          });
+          wizard.setMeasurementCount(completedCount + 1);
+
+          // Auto-advance to next incomplete position
+          const nextIncomplete = positions.find(
+            (p) => !p.completed && p.id !== (status.position_id ?? 0),
+          );
+          if (nextIncomplete) setCurrentPosition(nextIncomplete.id);
+        }
+
+        // Handle error
+        if (status.status === 'error') {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          setMeasuring(false);
+          setError(status.detail ?? 'Measurement failed');
+        }
+      } catch {
+        // Polling failure is non-critical; keep trying
+      }
+    }, 500);
+  }, [
+    currentChannel,
+    completedCount,
+    positions,
+    setMeasuring,
+    markComplete,
+    setCurrentPosition,
+    wizard,
+  ]);
+
+  /** Start an automated measurement for the current position/channel. */
   const handleStart = useCallback(async () => {
     setError(null);
+    setAutoStatus(null);
+
     try {
+      // Ensure backend has the current RPi config
+      await api.setRpiConfig(wizard.rpiConfig);
+
       const deviceIndex = wizard.umik?.index ?? 0;
       await api.startMeasurement({
         device_index: deviceIndex,
         channel: currentChannel,
         position_id: currentPosition,
+        mode: 'auto',
       });
       setMeasuring(true);
+      startPolling();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start measurement');
     }
-  }, [wizard.umik, currentChannel, currentPosition, setMeasuring]);
+  }, [wizard, currentChannel, currentPosition, setMeasuring, startPolling]);
 
+  /** Cancel / stop a measurement (stops recording, cleans up). */
   const handleStop = useCallback(async () => {
     setError(null);
     try {
-      const res = await api.stopMeasurement();
-      setMeasuring(false);
-      markComplete(currentPosition, {
-        position_id: currentPosition,
-        channel: currentChannel,
-        peak_db: peakDb,
-        clipped,
-        duration: 6,
-      });
-      wizard.setMeasurementCount(completedCount + 1);
-
-      // Advance to next position
-      const nextIncomplete = positions.find((p) => !p.completed && p.id !== currentPosition);
-      if (nextIncomplete) setCurrentPosition(nextIncomplete.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to stop measurement');
-      setMeasuring(false);
+      await api.stopMeasurement();
+    } catch {
+      // may fail if auto already stopped
     }
-  }, [setMeasuring, markComplete, currentPosition, currentChannel, peakDb, clipped, positions, setCurrentPosition, completedCount, wizard]);
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    setMeasuring(false);
+    setAutoStatus(null);
+  }, [setMeasuring]);
 
   const handleReset = useCallback(async () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
     resetAll();
     wizard.setMeasurementCount(0);
+    setAutoStatus(null);
+    setError(null);
     try {
       await fetch('/api/measurement/reset', { method: 'POST' });
     } catch {
@@ -89,6 +172,9 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   }, [resetAll, wizard]);
 
   const currentPos = positions.find((p) => p.id === currentPosition);
+  const statusPhase = autoStatus?.status ?? 'idle';
+  const statusLabel = STATUS_LABELS[statusPhase] ?? autoStatus?.detail ?? '';
+  const isRunning = measuring && statusPhase !== 'complete' && statusPhase !== 'error';
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -96,20 +182,24 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
         <h2 className="text-2xl font-bold text-gray-100">Measurement</h2>
         <p className="mt-1 text-gray-400">
           Position the microphone and measure each listening position. Point the UMIK-1 straight up
-          at the ceiling.
+          at the ceiling. Each measurement runs automatically: sweep upload, playback, and recording.
         </p>
       </div>
 
       <div className="grid grid-cols-3 gap-6">
         {/* Left: Position list */}
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-gray-300">Positions ({completedCount}/{positions.length})</h3>
+          <h3 className="text-sm font-semibold text-gray-300">
+            Positions ({completedCount}/{positions.length})
+          </h3>
           {positions.map((pos) => (
             <button
               key={pos.id}
-              onClick={() => setCurrentPosition(pos.id)}
+              onClick={() => !measuring && setCurrentPosition(pos.id)}
+              disabled={measuring}
               className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors
                 ${pos.id === currentPosition ? 'bg-indigo-600/20 text-indigo-300' : 'hover:bg-gray-800/60 text-gray-400'}
+                ${measuring ? 'cursor-not-allowed opacity-60' : ''}
               `}
             >
               {pos.completed ? (
@@ -124,7 +214,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
             </button>
           ))}
 
-          <Button variant="ghost" size="sm" onClick={handleReset} className="mt-4 w-full">
+          <Button variant="ghost" size="sm" onClick={handleReset} disabled={measuring} className="mt-4 w-full">
             <RotateCcw className="h-3 w-3" />
             Reset All
           </Button>
@@ -139,9 +229,11 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
                 {(['left', 'right', 'both'] as Channel[]).map((ch) => (
                   <button
                     key={ch}
-                    onClick={() => setCurrentChannel(ch)}
+                    onClick={() => !measuring && setCurrentChannel(ch)}
+                    disabled={measuring}
                     className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors
                       ${currentChannel === ch ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'}
+                      ${measuring ? 'cursor-not-allowed' : ''}
                     `}
                   >
                     {ch === 'left' ? 'L' : ch === 'right' ? 'R' : 'L+R'}
@@ -168,6 +260,43 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
                 </div>
               </div>
 
+              {/* Progress indicator (auto mode) */}
+              {isRunning && (
+                <div className="mb-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-4">
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-5 w-5 animate-spin text-indigo-400" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-indigo-300">{statusLabel}</p>
+                      {autoStatus?.detail && autoStatus.detail !== statusLabel && (
+                        <p className="mt-0.5 text-xs text-gray-400">{autoStatus.detail}</p>
+                      )}
+                    </div>
+                  </div>
+                  {/* Phase progress bar */}
+                  <div className="mt-3 flex gap-1">
+                    {['uploading', 'recording', 'playing', 'processing'].map((phase) => {
+                      const phaseOrder = ['uploading', 'recording', 'playing', 'processing'];
+                      const currentIdx = phaseOrder.indexOf(statusPhase);
+                      const phaseIdx = phaseOrder.indexOf(phase);
+                      const isActive = phase === statusPhase;
+                      const isDone = phaseIdx < currentIdx;
+                      return (
+                        <div
+                          key={phase}
+                          className={`h-1.5 flex-1 rounded-full transition-colors ${
+                            isDone
+                              ? 'bg-indigo-500'
+                              : isActive
+                                ? 'bg-indigo-400 animate-pulse'
+                                : 'bg-gray-700'
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Start/Stop buttons */}
               <div className="flex gap-3">
                 {!measuring ? (
@@ -178,15 +307,18 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
                 ) : (
                   <Button variant="danger" onClick={handleStop} className="flex-1">
                     <Square className="h-4 w-4" />
-                    Stop
+                    Cancel
                   </Button>
                 )}
               </div>
 
-              {measuring && (
+              {/* Status after completion */}
+              {!measuring && autoStatus?.status === 'complete' && (
                 <div className="mt-3 flex items-center gap-2">
-                  <div className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                  <span className="text-sm text-red-400">Recording...</span>
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                  <span className="text-sm text-emerald-400">
+                    {autoStatus.detail}
+                  </span>
                 </div>
               )}
             </Card>

@@ -49,6 +49,20 @@ export interface MeasurementResult {
   duration: number;
 }
 
+export type MeasurementMode = 'auto' | 'manual';
+
+export interface MeasurementStatus {
+  measuring: boolean;
+  status: 'idle' | 'starting' | 'uploading' | 'recording' | 'playing' | 'processing' | 'complete' | 'error';
+  detail: string | null;
+  position_id: number | null;
+  channel: string | null;
+  level_rms_db: number;
+  level_peak_db: number;
+  level_clipped: boolean;
+  completed_count: number;
+}
+
 // ─── Frequency Response ─────────────────────────────────────────────
 
 export interface FrequencyResponse {

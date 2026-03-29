@@ -30,12 +30,20 @@ export const api = {
     channel: string;
     position_id: number;
     duration?: number;
+    mode?: import('../types').MeasurementMode;
   }) =>
     fetchJSON<{ status: string }>('/measurement/start', {
       method: 'POST',
       body: JSON.stringify(params),
     }),
   stopMeasurement: () => fetchJSON<{ status: string }>('/measurement/stop', { method: 'POST' }),
+  getMeasurementStatus: () =>
+    fetchJSON<import('../types').MeasurementStatus>('/measurement/status'),
+  setRpiConfig: (config: import('../types').RPiConfig) =>
+    fetchJSON<{ status: string }>('/config/rpi', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    }),
   getAnalysis: () => fetchJSON<import('../types').FrequencyResponse>('/analysis'),
   getRT60: () => fetchJSON<import('../types').RT60Result>('/analysis/rt60'),
   getRoomModes: (length: number, width: number, height: number) =>

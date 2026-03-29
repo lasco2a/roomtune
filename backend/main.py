@@ -29,10 +29,20 @@ class AppState:
         self.calibration_loader = CalibrationLoader()
         self.orchestrator = MeasurementOrchestrator()
         self.connected_ws: list[WebSocket] = []
-        # RPi host — set by the Setup step, used by EQ apply
-        self.rpi_host: str = "moode.local"
+        # RPi connection config — set by the Setup step, used everywhere
+        self.rpi_config: dict = {
+            "host": "moode.local",
+            "port": 22,
+            "username": "pi",
+            "password": None,
+            "key_path": None,
+        }
         # Last computed EQ result — set by POST /api/eq/auto, used by POST /api/eq/apply
         self.last_eq_result = None
+
+    @property
+    def rpi_host(self) -> str:
+        return self.rpi_config.get("host", "moode.local")
 
 
 state = AppState()
@@ -153,10 +163,23 @@ async def get_calibration(path: str | None = None):
 
 @app.post("/api/config/rpi-host")
 async def set_rpi_host(body: dict):
-    """Update the RPi host used for CamillaDSP apply."""
+    """Update the RPi host used for CamillaDSP apply (legacy endpoint)."""
     host = body.get("host", "moode.local")
-    state.rpi_host = host
+    state.rpi_config["host"] = host
     return {"status": "ok", "host": host}
+
+
+@app.post("/api/config/rpi")
+async def set_rpi_config(body: dict):
+    """Update the full RPi connection config from the Setup step."""
+    state.rpi_config = {
+        "host": body.get("host", "moode.local"),
+        "port": body.get("port", 22),
+        "username": body.get("username", "pi"),
+        "password": body.get("password") or None,
+        "key_path": body.get("key_path") or None,
+    }
+    return {"status": "ok", "host": state.rpi_config["host"]}
 
 
 # ---------------------------------------------------------------------------
