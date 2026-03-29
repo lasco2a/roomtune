@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { Target, Sliders } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Target, Sliders, Loader2 } from 'lucide-react';
 import { Card, Button } from '../ui';
 import { FrequencyChart } from '../charts';
-import type { TargetPreset, TargetCurve, FrequencyResponse } from '../../types';
+import { useWizard } from '../../hooks/useWizard';
+import { api } from '../../hooks/useAPI';
+import type { TargetPreset, TargetCurve } from '../../types';
 
 interface TargetStepProps {
   onComplete: () => void;
@@ -15,58 +17,29 @@ const PRESETS: { key: TargetPreset; label: string; description: string }[] = [
   { key: 'bbc_dip', label: 'BBC Dip', description: 'Flat with ~3 dB dip around 2-4 kHz presence region' },
 ];
 
-// Generate target curve data for display
-function generateTargetData(preset: TargetPreset): TargetCurve {
-  const freqs = [20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000];
-  let db: number[];
-  switch (preset) {
-    case 'flat':
-      db = freqs.map(() => 0);
-      break;
-    case 'harman':
-      db = [6, 5.8, 5.5, 5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1, 0.7, 0.4, 0.2, 0, 0, 0, -0.2, -0.5, -0.8, -1, -1.3, -1.5, -1.8, -2.2, -2.8, -3.5, -4.5, -6, -8];
-      break;
-    case 'harman_bass_boost':
-      db = [9, 8.8, 8.5, 8, 7.5, 7, 6.5, 6, 4.5, 3, 1.5, 1, 0.7, 0.4, 0.2, 0, 0, 0, -0.2, -0.5, -0.8, -1, -1.3, -1.5, -1.8, -2.2, -2.8, -3.5, -4.5, -6, -8];
-      break;
-    case 'bbc_dip':
-      db = freqs.map((f) => {
-        if (f > 1500 && f < 6000) {
-          const logDist = Math.log2(f / 3000);
-          return -3 * Math.exp(-2 * logDist * logDist);
-        }
-        return 0;
-      });
-      break;
-  }
-  return { name: preset, frequencies: freqs, amplitude_db: db! };
-}
-
-// Dummy room response for overlay
-function dummyRoomResponse(): FrequencyResponse {
-  const n = 500;
-  const freqs = Array.from({ length: n }, (_, i) => 20 * Math.pow(1000, i / (n - 1)));
-  const mag = freqs.map((f) => {
-    let db = -10;
-    db += 8 * Math.exp(-Math.pow(Math.log2(f / 50), 2) * 2);
-    db -= 6 * Math.exp(-Math.pow(Math.log2(f / 120), 2) * 8);
-    db += 4 * Math.exp(-Math.pow(Math.log2(f / 3000), 2) * 3);
-    db -= 3 * Math.exp(-Math.pow(Math.log2(f / 8000), 2) * 4);
-    return db;
-  });
-  return {
-    frequencies: freqs, magnitude_db: mag, phase_deg: freqs.map(() => 0),
-    num_points: n, calibrated: true, smoothing: '1/6 octave',
-  };
-}
-
 export function TargetStep({ onComplete }: TargetStepProps) {
-  const [selectedPreset, setSelectedPreset] = useState<TargetPreset>('harman');
-  const [maxFilters, setMaxFilters] = useState(10);
-  const [maxGain, setMaxGain] = useState(12);
+  const wizard = useWizard();
+  const [targets, setTargets] = useState<TargetCurve[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const target = generateTargetData(selectedPreset);
-  const room = dummyRoomResponse();
+  // Load target curves from API on mount
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await api.getTargets();
+        setTargets(data);
+      } catch {
+        // Fall back to empty — presets still shown for selection
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  // Find the currently selected target from API data, or use local fallback
+  const selectedTargetData = targets.find((t) => t.name === wizard.selectedTarget);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -79,29 +52,45 @@ export function TargetStep({ onComplete }: TargetStepProps) {
 
       {/* Chart with room response + target overlay */}
       <Card>
-        <FrequencyChart
-          responses={[{ data: room, label: 'Room Response', color: '#818cf8' }]}
-          target={{ frequencies: target.frequencies, amplitude_db: target.amplitude_db, label: target.name }}
-          height={380}
-        />
+        {wizard.roomResponse ? (
+          <FrequencyChart
+            responses={[{ data: wizard.roomResponse, label: 'Room Response', color: '#818cf8' }]}
+            target={
+              selectedTargetData
+                ? { frequencies: selectedTargetData.frequencies, amplitude_db: selectedTargetData.amplitude_db, label: selectedTargetData.name }
+                : undefined
+            }
+            height={380}
+          />
+        ) : (
+          <div className="flex h-[380px] items-center justify-center text-gray-500">
+            No room measurement data — go back and run a measurement first
+          </div>
+        )}
       </Card>
 
       {/* Preset selector */}
       <Card title="Target Presets" subtitle="Select a reference target curve">
+        {loading && (
+          <div className="mb-3 flex items-center gap-2 text-sm text-gray-400">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading target curves...
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           {PRESETS.map((p) => (
             <button
               key={p.key}
-              onClick={() => setSelectedPreset(p.key)}
+              onClick={() => wizard.setSelectedTarget(p.key)}
               className={`rounded-lg border p-4 text-left transition-colors
-                ${selectedPreset === p.key
+                ${wizard.selectedTarget === p.key
                   ? 'border-indigo-500 bg-indigo-600/10'
                   : 'border-gray-700 bg-gray-800/40 hover:border-gray-600'}
               `}
             >
               <div className="flex items-center gap-2">
-                <Target className={`h-4 w-4 ${selectedPreset === p.key ? 'text-indigo-400' : 'text-gray-500'}`} />
-                <span className={`text-sm font-semibold ${selectedPreset === p.key ? 'text-indigo-300' : 'text-gray-300'}`}>
+                <Target className={`h-4 w-4 ${wizard.selectedTarget === p.key ? 'text-indigo-400' : 'text-gray-500'}`} />
+                <span className={`text-sm font-semibold ${wizard.selectedTarget === p.key ? 'text-indigo-300' : 'text-gray-300'}`}>
                   {p.label}
                 </span>
               </div>
@@ -117,14 +106,14 @@ export function TargetStep({ onComplete }: TargetStepProps) {
           <div>
             <label className="mb-2 flex items-center justify-between text-sm text-gray-300">
               <span>Max Filters per Channel</span>
-              <span className="font-mono text-indigo-400">{maxFilters}</span>
+              <span className="font-mono text-indigo-400">{wizard.maxFilters}</span>
             </label>
             <input
               type="range"
               min={3}
               max={20}
-              value={maxFilters}
-              onChange={(e) => setMaxFilters(Number(e.target.value))}
+              value={wizard.maxFilters}
+              onChange={(e) => wizard.setMaxFilters(Number(e.target.value))}
               className="w-full accent-indigo-500"
             />
             <div className="mt-1 flex justify-between text-xs text-gray-500">
@@ -135,14 +124,14 @@ export function TargetStep({ onComplete }: TargetStepProps) {
           <div>
             <label className="mb-2 flex items-center justify-between text-sm text-gray-300">
               <span>Max Cut (dB)</span>
-              <span className="font-mono text-indigo-400">-{maxGain}</span>
+              <span className="font-mono text-indigo-400">-{wizard.maxGain}</span>
             </label>
             <input
               type="range"
               min={3}
               max={20}
-              value={maxGain}
-              onChange={(e) => setMaxGain(Number(e.target.value))}
+              value={wizard.maxGain}
+              onChange={(e) => wizard.setMaxGain(Number(e.target.value))}
               className="w-full accent-indigo-500"
             />
             <div className="mt-1 flex justify-between text-xs text-gray-500">
@@ -159,7 +148,9 @@ export function TargetStep({ onComplete }: TargetStepProps) {
       </Card>
 
       <div className="flex justify-end">
-        <Button onClick={onComplete}>Compute EQ Filters</Button>
+        <Button onClick={onComplete} disabled={!wizard.roomResponse}>
+          Compute EQ Filters
+        </Button>
       </div>
     </div>
   );

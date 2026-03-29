@@ -1,5 +1,6 @@
 """RoomTune - FastAPI application and WebSocket server."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.audio.devices import AudioDeviceManager
 from backend.audio.calibration import CalibrationLoader
+from backend.orchestrator import MeasurementOrchestrator
 
 logger = logging.getLogger("roomtune")
 
@@ -25,10 +27,26 @@ class AppState:
     def __init__(self) -> None:
         self.device_manager = AudioDeviceManager()
         self.calibration_loader = CalibrationLoader()
+        self.orchestrator = MeasurementOrchestrator()
         self.connected_ws: list[WebSocket] = []
+        # RPi host — set by the Setup step, used by EQ apply
+        self.rpi_host: str = "moode.local"
+        # Last computed EQ result — set by POST /api/eq/auto, used by POST /api/eq/apply
+        self.last_eq_result = None
 
 
 state = AppState()
+
+
+def get_state() -> AppState:
+    """Return the global application state (used by API routers)."""
+    return state
+
+
+def get_orchestrator() -> MeasurementOrchestrator:
+    """Return the global measurement orchestrator (used by API routers)."""
+    return state.orchestrator
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -40,8 +58,33 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     logger.info("RoomTune backend starting …")
     state.device_manager.refresh()
+
+    # Start background task for WebSocket level meter broadcasting
+    level_task = asyncio.create_task(_broadcast_levels())
+
     yield
+
+    level_task.cancel()
+    try:
+        await level_task
+    except asyncio.CancelledError:
+        pass
     logger.info("RoomTune backend shutting down …")
+
+
+async def _broadcast_levels() -> None:
+    """Periodically broadcast level meter data to WebSocket clients."""
+    while True:
+        await asyncio.sleep(0.05)  # 20 Hz update rate
+        orch = state.orchestrator
+        if orch.session.measuring and state.connected_ws:
+            event = {
+                "event": "level",
+                "rms_db": round(orch.session.level_rms_db, 1),
+                "peak_db": round(orch.session.level_peak_db, 1),
+                "clipped": orch.session.level_clipped,
+            }
+            await broadcast(event)
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +107,21 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# REST endpoints
+# Register API routers
+# ---------------------------------------------------------------------------
+
+from backend.api.connection import router as connection_router  # noqa: E402
+from backend.api.measurement import router as measurement_router  # noqa: E402
+from backend.api.analysis import router as analysis_router  # noqa: E402
+from backend.api.eq import router as eq_router  # noqa: E402
+
+app.include_router(connection_router)
+app.include_router(measurement_router)
+app.include_router(analysis_router)
+app.include_router(eq_router)
+
+# ---------------------------------------------------------------------------
+# Core REST endpoints (health, devices, calibration)
 # ---------------------------------------------------------------------------
 
 
@@ -92,6 +149,14 @@ async def get_calibration(path: str | None = None):
         path = str(default_path)
     cal = state.calibration_loader.load(path)
     return cal.to_dict()
+
+
+@app.post("/api/config/rpi-host")
+async def set_rpi_host(body: dict):
+    """Update the RPi host used for CamillaDSP apply."""
+    host = body.get("host", "moode.local")
+    state.rpi_host = host
+    return {"status": "ok", "host": host}
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Wifi, Server, Music, Loader2 } from 'lucide-react';
 import { Card, Button, StatusBadge } from '../ui';
 import { api } from '../../hooks/useAPI';
+import { useWizard } from '../../hooks/useWizard';
 import type { ConnectionTestResult } from '../../types';
 
 interface ConnectionStepProps {
@@ -9,6 +10,7 @@ interface ConnectionStepProps {
 }
 
 export function ConnectionStep({ onComplete }: ConnectionStepProps) {
+  const wizard = useWizard();
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -17,13 +19,10 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
     setTesting(true);
     setError(null);
     try {
-      const res = await api.connectionTest({
-        host: 'moode.local',
-        port: 22,
-        username: 'pi',
-        password: '',
-      });
+      const res = await api.connectionTest(wizard.rpiConfig);
       setResult(res);
+      const allOk = res.rpi.connected && res.camilladsp.connected && res.mpd.connected;
+      wizard.setConnectionOk(allOk);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Connection test failed');
     } finally {
@@ -40,6 +39,11 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
         <p className="mt-1 text-gray-400">
           Verify connectivity to the Raspberry Pi, CamillaDSP, and MPD.
         </p>
+      </div>
+
+      <div className="rounded-lg bg-gray-800/40 px-4 py-2 text-sm text-gray-400">
+        Testing connection to <span className="font-mono text-gray-200">{wizard.rpiConfig.host}</span> as{' '}
+        <span className="font-mono text-gray-200">{wizard.rpiConfig.username}</span>
       </div>
 
       <div className="grid gap-4">

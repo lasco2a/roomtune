@@ -3,6 +3,8 @@ import { Mic, Play, Square, CheckCircle2, Circle, RotateCcw } from 'lucide-react
 import { Card, Button, LevelMeter } from '../ui';
 import { useMeasurement } from '../../hooks/useMeasurement';
 import { useWebSocket } from '../../hooks/useWebSocket';
+import { useWizard } from '../../hooks/useWizard';
+import { api } from '../../hooks/useAPI';
 import type { Channel } from '../../types';
 
 interface MeasurementStepProps {
@@ -10,6 +12,7 @@ interface MeasurementStepProps {
 }
 
 export function MeasurementStep({ onComplete }: MeasurementStepProps) {
+  const wizard = useWizard();
   const {
     positions,
     currentPosition,
@@ -27,6 +30,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const [rmsDb, setRmsDb] = useState(-60);
   const [peakDb, setPeakDb] = useState(-60);
   const [clipped, setClipped] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useWebSocket({
     onLevel: (rms, peak, clip) => {
@@ -36,27 +40,53 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
     },
   });
 
-  const handleStart = useCallback(() => {
-    setMeasuring(true);
-    // In real implementation, this calls api.startMeasurement()
-  }, [setMeasuring]);
+  const handleStart = useCallback(async () => {
+    setError(null);
+    try {
+      const deviceIndex = wizard.umik?.index ?? 0;
+      await api.startMeasurement({
+        device_index: deviceIndex,
+        channel: currentChannel,
+        position_id: currentPosition,
+      });
+      setMeasuring(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start measurement');
+    }
+  }, [wizard.umik, currentChannel, currentPosition, setMeasuring]);
 
-  const handleStop = useCallback(() => {
-    setMeasuring(false);
-    markComplete(currentPosition, {
-      position_id: currentPosition,
-      channel: currentChannel,
-      peak_db: peakDb,
-      clipped,
-      duration: 6,
-    });
-    // Advance to next position
-    const pos = positions.find((p) => p.id === currentPosition);
-    if (pos) {
+  const handleStop = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await api.stopMeasurement();
+      setMeasuring(false);
+      markComplete(currentPosition, {
+        position_id: currentPosition,
+        channel: currentChannel,
+        peak_db: peakDb,
+        clipped,
+        duration: 6,
+      });
+      wizard.setMeasurementCount(completedCount + 1);
+
+      // Advance to next position
       const nextIncomplete = positions.find((p) => !p.completed && p.id !== currentPosition);
       if (nextIncomplete) setCurrentPosition(nextIncomplete.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to stop measurement');
+      setMeasuring(false);
     }
-  }, [setMeasuring, markComplete, currentPosition, currentChannel, peakDb, clipped, positions, setCurrentPosition]);
+  }, [setMeasuring, markComplete, currentPosition, currentChannel, peakDb, clipped, positions, setCurrentPosition, completedCount, wizard]);
+
+  const handleReset = useCallback(async () => {
+    resetAll();
+    wizard.setMeasurementCount(0);
+    try {
+      await fetch('/api/measurement/reset', { method: 'POST' });
+    } catch {
+      // non-critical
+    }
+  }, [resetAll, wizard]);
 
   const currentPos = positions.find((p) => p.id === currentPosition);
 
@@ -94,7 +124,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
             </button>
           ))}
 
-          <Button variant="ghost" size="sm" onClick={resetAll} className="mt-4 w-full">
+          <Button variant="ghost" size="sm" onClick={handleReset} className="mt-4 w-full">
             <RotateCcw className="h-3 w-3" />
             Reset All
           </Button>
@@ -160,6 +190,12 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
                 </div>
               )}
             </Card>
+          )}
+
+          {error && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              {error}
+            </div>
           )}
         </div>
       </div>

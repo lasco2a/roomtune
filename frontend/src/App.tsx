@@ -1,5 +1,10 @@
+import { WizardProvider } from './hooks/useWizard';
 import { WizardLayout } from './components/wizard';
 
 export default function App() {
-  return <WizardLayout />;
+  return (
+    <WizardProvider>
+      <WizardLayout />
+    </WizardProvider>
+  );
 }

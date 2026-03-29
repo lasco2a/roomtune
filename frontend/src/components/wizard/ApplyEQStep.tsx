@@ -1,63 +1,77 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Zap, Upload, Loader2 } from 'lucide-react';
 import { Card, Button, StatusBadge } from '../ui';
 import { EQChart } from '../charts';
-import type { EQFilter, AutoEQResult } from '../../types';
+import { useWizard } from '../../hooks/useWizard';
+import { api } from '../../hooks/useAPI';
+import type { AutoEQResult } from '../../types';
 
 interface ApplyEQStepProps {
   onComplete: () => void;
 }
 
-// Demo data
-const DEMO_FILTERS: EQFilter[] = [
-  { type: 'peaking', frequency: 52, gain_db: -8.2, q: 2.5 },
-  { type: 'peaking', frequency: 118, gain_db: -5.1, q: 3.2 },
-  { type: 'peaking', frequency: 245, gain_db: -3.8, q: 4.1 },
-  { type: 'peaking', frequency: 680, gain_db: -2.1, q: 2.8 },
-  { type: 'peaking', frequency: 2800, gain_db: -4.5, q: 3.0 },
-  { type: 'peaking', frequency: 5200, gain_db: -2.8, q: 2.2 },
-  { type: 'high_shelf', frequency: 12000, gain_db: -1.5, q: 0.7 },
-];
-
-function demoChartData() {
-  const n = 500;
-  const freqs = Array.from({ length: n }, (_, i) => 20 * Math.pow(1000, i / (n - 1)));
-  const before = freqs.map((f) => {
-    let db = -10;
-    db += 8 * Math.exp(-Math.pow(Math.log2(f / 50), 2) * 2);
-    db -= 6 * Math.exp(-Math.pow(Math.log2(f / 120), 2) * 8);
-    db += 4 * Math.exp(-Math.pow(Math.log2(f / 3000), 2) * 3);
-    db -= 3 * Math.exp(-Math.pow(Math.log2(f / 8000), 2) * 4);
-    return db;
-  });
-  // Simulated corrected response (flatter)
-  const after = before.map((db) => db * 0.3 - 5);
-  const targetFreqs = [20, 100, 1000, 10000, 20000];
-  const targetDb = [6, 3, 0, -3.5, -8];
-  return { freqs, before, after, targetFreqs, targetDb };
-}
-
 export function ApplyEQStep({ onComplete }: ApplyEQStepProps) {
+  const wizard = useWizard();
+  const [computing, setComputing] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [applied, setApplied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const chart = demoChartData();
-  const result: AutoEQResult = {
-    filters: DEMO_FILTERS,
-    target_name: 'Harman In-Room',
-    error_before_db: 6.8,
-    error_after_db: 2.1,
-    improvement_db: 4.7,
-    num_filters: DEMO_FILTERS.length,
+  // Compute EQ on mount if not already computed
+  useEffect(() => {
+    if (!wizard.eqResult && wizard.roomResponse) {
+      computeEQ();
+    }
+  }, []);
+
+  const computeEQ = async () => {
+    setComputing(true);
+    setError(null);
+    try {
+      const result = await api.runAutoEQ({
+        target: wizard.selectedTarget,
+        max_filters: wizard.maxFilters,
+        max_gain_db: -wizard.maxGain,
+      });
+      wizard.setEqResult(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to compute EQ');
+    } finally {
+      setComputing(false);
+    }
   };
 
   const handleApply = async () => {
     setApplying(true);
-    // In production: await api.applyCamillaDSP()
-    await new Promise((r) => setTimeout(r, 1500));
-    setApplying(false);
-    setApplied(true);
+    setError(null);
+    try {
+      await api.applyCamillaDSP();
+      wizard.setEqApplied(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to apply EQ to CamillaDSP');
+    } finally {
+      setApplying(false);
+    }
   };
+
+  const result = wizard.eqResult;
+
+  // Build chart data from room response + EQ result
+  const chartData = wizard.roomResponse && result
+    ? {
+        freqs: wizard.roomResponse.frequencies,
+        before: wizard.roomResponse.magnitude_db,
+        // Simulated corrected: apply the EQ filter correction curve
+        // The backend auto-EQ result includes error metrics; for the chart
+        // we approximate the corrected response
+        after: wizard.roomResponse.magnitude_db.map((db, i) => {
+          // Simplified: reduce deviation from 0 dB by the improvement ratio
+          const ratio = result.error_before_db > 0
+            ? result.error_after_db / result.error_before_db
+            : 1;
+          return db * ratio;
+        }),
+      }
+    : null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -68,86 +82,111 @@ export function ApplyEQStep({ onComplete }: ApplyEQStepProps) {
         </p>
       </div>
 
-      {/* Before / After Chart */}
-      <Card title="Before / After Comparison">
-        <EQChart
-          measuredFreqs={chart.freqs}
-          measuredDb={chart.before}
-          correctedDb={chart.after}
-          targetFreqs={chart.targetFreqs}
-          targetDb={chart.targetDb}
-          height={350}
-        />
-        <div className="mt-3 flex items-center gap-6 text-sm">
-          <div>
-            <span className="text-gray-400">Error before: </span>
-            <span className="font-mono text-red-400">{result.error_before_db} dB</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Error after: </span>
-            <span className="font-mono text-emerald-400">{result.error_after_db} dB</span>
-          </div>
-          <div>
-            <span className="text-gray-400">Improvement: </span>
-            <span className="font-mono text-indigo-400">{result.improvement_db} dB</span>
-          </div>
+      {computing && (
+        <div className="flex items-center justify-center gap-3 rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-6">
+          <Loader2 className="h-6 w-6 animate-spin text-indigo-400" />
+          <span className="text-indigo-300">Computing optimal EQ filters...</span>
         </div>
-      </Card>
+      )}
+
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {error}
+          <Button variant="ghost" size="sm" onClick={computeEQ} className="ml-3">
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {/* Before / After Chart */}
+      {chartData && (
+        <Card title="Before / After Comparison">
+          <EQChart
+            measuredFreqs={chartData.freqs}
+            measuredDb={chartData.before}
+            correctedDb={chartData.after}
+            height={350}
+          />
+          {result && (
+            <div className="mt-3 flex items-center gap-6 text-sm">
+              <div>
+                <span className="text-gray-400">Error before: </span>
+                <span className="font-mono text-red-400">{result.error_before_db.toFixed(1)} dB</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Error after: </span>
+                <span className="font-mono text-emerald-400">{result.error_after_db.toFixed(1)} dB</span>
+              </div>
+              <div>
+                <span className="text-gray-400">Improvement: </span>
+                <span className="font-mono text-indigo-400">{result.improvement_db.toFixed(1)} dB</span>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* Filter Table */}
-      <Card title="Parametric EQ Filters" subtitle={`${result.num_filters} filters (subtractive only)`}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-700 text-left text-xs font-medium text-gray-400">
-                <th className="pb-2 pr-4">#</th>
-                <th className="pb-2 pr-4">Type</th>
-                <th className="pb-2 pr-4">Frequency</th>
-                <th className="pb-2 pr-4">Gain</th>
-                <th className="pb-2 pr-4">Q</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.filters.map((f, i) => (
-                <tr key={i} className="border-t border-gray-800 text-gray-300">
-                  <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
-                  <td className="py-2 pr-4">
-                    <StatusBadge
-                      status={f.type === 'peaking' ? 'running' : 'pending'}
-                      label={f.type.replace('_', ' ')}
-                    />
-                  </td>
-                  <td className="py-2 pr-4 font-mono">
-                    {f.frequency >= 1000
-                      ? `${(f.frequency / 1000).toFixed(1)}k`
-                      : f.frequency.toFixed(0)}{' '}
-                    Hz
-                  </td>
-                  <td className="py-2 pr-4 font-mono text-red-400">{f.gain_db.toFixed(1)} dB</td>
-                  <td className="py-2 pr-4 font-mono">{f.q.toFixed(2)}</td>
+      {result && (
+        <Card title="Parametric EQ Filters" subtitle={`${result.num_filters} filters (subtractive only)`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left text-xs font-medium text-gray-400">
+                  <th className="pb-2 pr-4">#</th>
+                  <th className="pb-2 pr-4">Type</th>
+                  <th className="pb-2 pr-4">Frequency</th>
+                  <th className="pb-2 pr-4">Gain</th>
+                  <th className="pb-2 pr-4">Q</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+              </thead>
+              <tbody>
+                {result.filters.map((f, i) => (
+                  <tr key={i} className="border-t border-gray-800 text-gray-300">
+                    <td className="py-2 pr-4 text-gray-500">{i + 1}</td>
+                    <td className="py-2 pr-4">
+                      <StatusBadge
+                        status={f.type === 'peaking' ? 'running' : 'pending'}
+                        label={f.type.replace('_', ' ')}
+                      />
+                    </td>
+                    <td className="py-2 pr-4 font-mono">
+                      {f.frequency >= 1000
+                        ? `${(f.frequency / 1000).toFixed(1)}k`
+                        : f.frequency.toFixed(0)}{' '}
+                      Hz
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-red-400">{f.gain_db.toFixed(1)} dB</td>
+                    <td className="py-2 pr-4 font-mono">{f.q.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Apply button */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {applied && <StatusBadge status="ok" label="Applied to CamillaDSP" />}
+          {wizard.eqApplied && <StatusBadge status="ok" label="Applied to CamillaDSP" />}
         </div>
         <div className="flex gap-3">
+          {result && (
+            <Button variant="ghost" onClick={computeEQ} disabled={computing}>
+              Recompute
+            </Button>
+          )}
           <Button variant="secondary" onClick={onComplete}>
             Skip to Verification
           </Button>
-          <Button onClick={handleApply} disabled={applying || applied}>
+          <Button onClick={handleApply} disabled={applying || wizard.eqApplied || !result}>
             {applying ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Applying...
               </>
-            ) : applied ? (
+            ) : wizard.eqApplied ? (
               <>
                 <Zap className="h-4 w-4" />
                 Applied

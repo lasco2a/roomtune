@@ -2,30 +2,50 @@ import { useState } from 'react';
 import { CheckCircle2, Play, Loader2 } from 'lucide-react';
 import { Card, Button, StatusBadge } from '../ui';
 import { EQChart } from '../charts';
+import { useWizard } from '../../hooks/useWizard';
+import { api } from '../../hooks/useAPI';
+import type { FrequencyResponse } from '../../types';
 
 export function VerificationStep() {
+  const wizard = useWizard();
   const [measuring, setMeasuring] = useState(false);
   const [verified, setVerified] = useState(false);
+  const [correctedFr, setCorrectedFr] = useState<FrequencyResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleVerify = async () => {
     setMeasuring(true);
-    // In production: run a quick measurement and compare
-    await new Promise((r) => setTimeout(r, 3000));
-    setMeasuring(false);
-    setVerified(true);
+    setError(null);
+    try {
+      // Start a quick measurement at primary position
+      const deviceIndex = wizard.umik?.index ?? 0;
+      await api.startMeasurement({
+        device_index: deviceIndex,
+        channel: 'left',
+        position_id: 1,
+      });
+
+      // Wait for sweep to complete (roughly sweep duration + 1s buffer)
+      await new Promise((r) => setTimeout(r, 7000));
+
+      // Stop and get results
+      await api.stopMeasurement();
+
+      // Fetch the updated analysis (which now includes the post-EQ measurement)
+      const data = await fetch('/api/analysis').then((r) => {
+        if (!r.ok) throw new Error(`API ${r.status}`);
+        return r.json();
+      });
+      setCorrectedFr(data);
+      setVerified(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Verification measurement failed');
+    } finally {
+      setMeasuring(false);
+    }
   };
 
-  // Demo data
-  const n = 500;
-  const freqs = Array.from({ length: n }, (_, i) => 20 * Math.pow(1000, i / (n - 1)));
-  const before = freqs.map((f) => {
-    let db = -10;
-    db += 8 * Math.exp(-Math.pow(Math.log2(f / 50), 2) * 2);
-    db -= 6 * Math.exp(-Math.pow(Math.log2(f / 120), 2) * 8);
-    db += 4 * Math.exp(-Math.pow(Math.log2(f / 3000), 2) * 3);
-    return db;
-  });
-  const after = before.map((db) => db * 0.3 - 5 + (Math.random() - 0.5) * 0.5);
+  const beforeFr = wizard.roomResponse;
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -36,13 +56,19 @@ export function VerificationStep() {
         </p>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+
       {/* Before / After */}
-      {verified && (
+      {verified && beforeFr && correctedFr && (
         <Card title="Before / After Comparison" subtitle="Original measurement vs. corrected measurement">
           <EQChart
-            measuredFreqs={freqs}
-            measuredDb={before}
-            correctedDb={after}
+            measuredFreqs={beforeFr.frequencies}
+            measuredDb={beforeFr.magnitude_db}
+            correctedDb={correctedFr.magnitude_db}
             height={380}
           />
         </Card>
@@ -96,6 +122,12 @@ export function VerificationStep() {
             Your CamillaDSP configuration has been updated with optimized parametric EQ filters.
             The room response now tracks the target curve within acceptable tolerance.
           </p>
+          {wizard.eqResult && (
+            <p className="mt-2 text-sm text-gray-500">
+              {wizard.eqResult.num_filters} filters applied, error reduced from{' '}
+              {wizard.eqResult.error_before_db.toFixed(1)} dB to {wizard.eqResult.error_after_db.toFixed(1)} dB
+            </p>
+          )}
         </div>
       )}
     </div>

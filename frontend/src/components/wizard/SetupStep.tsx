@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Mic, RefreshCw, FileText } from 'lucide-react';
 import { Card, Button, StatusBadge } from '../ui';
 import { api } from '../../hooks/useAPI';
+import { useWizard } from '../../hooks/useWizard';
 import type { AudioDevice, CalibrationData } from '../../types';
 
 interface SetupStepProps {
@@ -9,16 +10,10 @@ interface SetupStepProps {
 }
 
 export function SetupStep({ onComplete }: SetupStepProps) {
+  const wizard = useWizard();
   const [devices, setDevices] = useState<AudioDevice[]>([]);
-  const [umik, setUmik] = useState<AudioDevice | null>(null);
-  const [calibration, setCalibration] = useState<CalibrationData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // RPi connection config
-  const [rpiHost, setRpiHost] = useState('moode.local');
-  const [rpiUser, setRpiUser] = useState('pi');
-  const [rpiPassword, setRpiPassword] = useState('');
 
   const scanDevices = async () => {
     setLoading(true);
@@ -26,7 +21,7 @@ export function SetupStep({ onComplete }: SetupStepProps) {
     try {
       const result = await api.devices();
       setDevices(result.devices);
-      setUmik(result.umik);
+      wizard.setUmik(result.umik);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to scan devices');
     } finally {
@@ -37,7 +32,7 @@ export function SetupStep({ onComplete }: SetupStepProps) {
   const loadCalibration = async () => {
     try {
       const cal = await api.calibration();
-      setCalibration(cal);
+      wizard.setCalibration(cal);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load calibration');
     }
@@ -48,7 +43,32 @@ export function SetupStep({ onComplete }: SetupStepProps) {
     loadCalibration();
   }, []);
 
-  const ready = umik !== null && calibration !== null;
+  // Sync RPi config changes to context and notify backend
+  const updateRpiHost = (host: string) => {
+    wizard.setRpiConfig({ ...wizard.rpiConfig, host });
+  };
+  const updateRpiUser = (username: string) => {
+    wizard.setRpiConfig({ ...wizard.rpiConfig, username });
+  };
+  const updateRpiPassword = (password: string) => {
+    wizard.setRpiConfig({ ...wizard.rpiConfig, password });
+  };
+
+  const handleContinue = async () => {
+    // Tell the backend the RPi host so EQ apply knows where to connect
+    try {
+      await fetch('/api/config/rpi-host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: wizard.rpiConfig.host }),
+      });
+    } catch {
+      // non-critical
+    }
+    onComplete();
+  };
+
+  const ready = wizard.umik !== null && wizard.calibration !== null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -65,11 +85,11 @@ export function SetupStep({ onComplete }: SetupStepProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <Mic className="h-5 w-5 text-indigo-400" />
-              {umik ? (
+              {wizard.umik ? (
                 <div>
-                  <p className="font-medium text-gray-200">{umik.name}</p>
+                  <p className="font-medium text-gray-200">{wizard.umik.name}</p>
                   <p className="text-sm text-gray-400">
-                    {umik.channels}ch, {umik.default_samplerate / 1000}kHz, {umik.hostapi}
+                    {wizard.umik.channels}ch, {wizard.umik.default_samplerate / 1000}kHz, {wizard.umik.hostapi}
                   </p>
                 </div>
               ) : (
@@ -77,14 +97,14 @@ export function SetupStep({ onComplete }: SetupStepProps) {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <StatusBadge status={umik ? 'ok' : 'error'} label={umik ? 'Detected' : 'Not found'} />
+              <StatusBadge status={wizard.umik ? 'ok' : 'error'} label={wizard.umik ? 'Detected' : 'Not found'} />
               <Button variant="ghost" size="sm" onClick={scanDevices} disabled={loading}>
                 <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               </Button>
             </div>
           </div>
 
-          {devices.length > 0 && !umik && (
+          {devices.length > 0 && !wizard.umik && (
             <div className="rounded-lg bg-gray-800/50 p-3">
               <p className="mb-2 text-xs font-medium text-gray-400">Available input devices:</p>
               {devices.map((d) => (
@@ -102,15 +122,15 @@ export function SetupStep({ onComplete }: SetupStepProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <FileText className="h-5 w-5 text-indigo-400" />
-            {calibration ? (
+            {wizard.calibration ? (
               <div>
                 <p className="font-medium text-gray-200">
-                  Serial {calibration.serial} {calibration.is_90deg ? '(90-degree)' : '(0-degree)'}
+                  Serial {wizard.calibration.serial} {wizard.calibration.is_90deg ? '(90-degree)' : '(0-degree)'}
                 </p>
                 <p className="text-sm text-gray-400">
-                  {calibration.num_points} points, {calibration.freq_min.toFixed(0)}
-                  &ndash;{calibration.freq_max.toFixed(0)} Hz, sensitivity{' '}
-                  {calibration.sensitivity_db.toFixed(3)} dB
+                  {wizard.calibration.num_points} points, {wizard.calibration.freq_min.toFixed(0)}
+                  &ndash;{wizard.calibration.freq_max.toFixed(0)} Hz, sensitivity{' '}
+                  {wizard.calibration.sensitivity_db.toFixed(3)} dB
                 </p>
               </div>
             ) : (
@@ -118,8 +138,8 @@ export function SetupStep({ onComplete }: SetupStepProps) {
             )}
           </div>
           <StatusBadge
-            status={calibration ? 'ok' : 'error'}
-            label={calibration ? 'Loaded' : 'Missing'}
+            status={wizard.calibration ? 'ok' : 'error'}
+            label={wizard.calibration ? 'Loaded' : 'Missing'}
           />
         </div>
       </Card>
@@ -131,8 +151,8 @@ export function SetupStep({ onComplete }: SetupStepProps) {
             <label className="mb-1 block text-xs font-medium text-gray-400">Host</label>
             <input
               type="text"
-              value={rpiHost}
-              onChange={(e) => setRpiHost(e.target.value)}
+              value={wizard.rpiConfig.host}
+              onChange={(e) => updateRpiHost(e.target.value)}
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
             />
           </div>
@@ -140,8 +160,8 @@ export function SetupStep({ onComplete }: SetupStepProps) {
             <label className="mb-1 block text-xs font-medium text-gray-400">Username</label>
             <input
               type="text"
-              value={rpiUser}
-              onChange={(e) => setRpiUser(e.target.value)}
+              value={wizard.rpiConfig.username}
+              onChange={(e) => updateRpiUser(e.target.value)}
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
             />
           </div>
@@ -149,8 +169,8 @@ export function SetupStep({ onComplete }: SetupStepProps) {
             <label className="mb-1 block text-xs font-medium text-gray-400">Password</label>
             <input
               type="password"
-              value={rpiPassword}
-              onChange={(e) => setRpiPassword(e.target.value)}
+              value={wizard.rpiConfig.password}
+              onChange={(e) => updateRpiPassword(e.target.value)}
               placeholder="or use SSH key"
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:border-indigo-500 focus:outline-none"
             />
@@ -165,7 +185,7 @@ export function SetupStep({ onComplete }: SetupStepProps) {
       )}
 
       <div className="flex justify-end">
-        <Button onClick={onComplete} disabled={!ready}>
+        <Button onClick={handleContinue} disabled={!ready}>
           Continue to Connection Test
         </Button>
       </div>
