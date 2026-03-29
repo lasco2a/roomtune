@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Clock, Waves, Loader2 } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { Clock, Waves, Loader2, RefreshCw } from 'lucide-react';
 import { Card, Button, StatusBadge } from '../ui';
 import { FrequencyChart } from '../charts';
 import { api } from '../../hooks/useAPI';
@@ -18,7 +18,7 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
   const [fr, setFr] = useState<FrequencyResponse | null>(null);
   const [rt60, setRt60] = useState<RT60Result | null>(null);
   const [modes, setModes] = useState<RoomMode[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Room dimensions for mode calculation (user could configure these)
@@ -36,47 +36,59 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
     }
   };
 
-  const loadAnalysis = async (smooth: string) => {
+  const loadAnalysis = useCallback(async (smooth: string) => {
     setLoading(true);
     setError(null);
     try {
       const fraction = smoothingToFraction(smooth);
       const params = fraction > 0 ? `?smoothing=${fraction}` : '';
-      const data = await fetch(`/api/analysis${params}`).then((r) => {
-        if (!r.ok) throw new Error(`API ${r.status}`);
-        return r.json();
-      });
+      const res = await fetch(`/api/analysis${params}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText);
+        throw new Error(`API ${res.status}: ${text}`);
+      }
+      const data: FrequencyResponse = await res.json();
       setFr(data);
       wizard.setRoomResponse(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load analysis');
+      const msg = e instanceof Error ? e.message : 'Failed to load analysis';
+      setError(msg);
+      console.error('Failed to load analysis:', msg);
     } finally {
       setLoading(false);
     }
-  };
+  }, [wizard]);
 
-  const loadRT60 = async () => {
+  const loadRT60 = useCallback(async () => {
     try {
       const data = await api.getRT60();
       setRt60(data);
-    } catch {
+    } catch (e) {
+      console.error('Failed to load RT60:', e);
       // non-critical — RT60 may not be available
     }
-  };
+  }, []);
 
-  const loadModes = async () => {
+  const loadModes = useCallback(async () => {
     try {
       const data = await api.getRoomModes(roomLength, roomWidth, roomHeight);
       setModes(data);
-    } catch {
+    } catch (e) {
+      console.error('Failed to load room modes:', e);
       // non-critical
     }
-  };
+  }, [roomLength, roomWidth, roomHeight]);
 
-  useEffect(() => {
+  const loadAll = useCallback(() => {
     loadAnalysis(smoothing);
     loadRT60();
     loadModes();
+  }, [smoothing, loadAnalysis, loadRT60, loadModes]);
+
+  // Load data on mount
+  useEffect(() => {
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reload when smoothing changes
@@ -95,8 +107,12 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-          {error}
+        <div className="flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3">
+          <span className="text-sm text-red-400">{error}</span>
+          <Button size="sm" variant="ghost" onClick={loadAll}>
+            <RefreshCw className="h-3 w-3" />
+            Retry
+          </Button>
         </div>
       )}
 
@@ -116,14 +132,21 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
           ))}
           {loading && <Loader2 className="ml-2 h-4 w-4 animate-spin text-gray-400" />}
         </div>
-        {fr ? (
+        {fr && fr.frequencies && fr.frequencies.length > 0 ? (
           <FrequencyChart
             responses={[{ data: fr, label: 'Room Response' }]}
             height={380}
           />
         ) : (
           <div className="flex h-[380px] items-center justify-center text-gray-500">
-            {loading ? 'Loading...' : 'No measurement data available'}
+            {loading ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span>Loading frequency response...</span>
+              </div>
+            ) : (
+              'No measurement data available'
+            )}
           </div>
         )}
       </Card>
@@ -159,12 +182,18 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
                   ? 'Room is relatively dead — good for near-field listening.'
                   : rt60.rt60 < 0.6
                     ? 'Room has moderate reverb — typical for a treated room.'
-                    : 'Room is quite live — consider acoustic treatment.'}
+                    : rt60.rt60 < 1.0
+                      ? 'Room is somewhat live — consider bass traps and absorption panels.'
+                      : 'Room is quite reverberant — acoustic treatment strongly recommended.'}
               </p>
             </div>
           ) : (
             <div className="flex h-24 items-center justify-center text-sm text-gray-500">
-              RT60 data not available
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                'RT60 data not available'
+              )}
             </div>
           )}
         </Card>
@@ -208,7 +237,7 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
           </div>
           <div className="flex items-start gap-3">
             <Waves className="mt-0.5 h-5 w-5 text-indigo-400" />
-            <div className="flex-1">
+            <div className="flex-1 max-h-48 overflow-y-auto">
               {modes.length > 0 ? (
                 <table className="w-full text-sm">
                   <thead>
@@ -219,7 +248,7 @@ export function AnalysisStep({ onComplete }: AnalysisStepProps) {
                     </tr>
                   </thead>
                   <tbody className="text-gray-300">
-                    {modes.map((m, i) => (
+                    {modes.filter((m) => m.mode_type === 'axial').map((m, i) => (
                       <tr key={i} className="border-t border-gray-800">
                         <td className="py-1.5 font-medium">{m.frequency.toFixed(1)} Hz</td>
                         <td className="py-1.5">

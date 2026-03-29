@@ -139,12 +139,20 @@ async def measurement_status():
     from backend.main import get_orchestrator
 
     orch = get_orchestrator()
+
+    # Always return the position/channel context — even after completion.
+    # During measurement: use the current measurement target.
+    # After completion/error: use the last known position/channel so the
+    # frontend can correctly mark the right position as done.
+    position_id = orch.session.current_position if orch.session.current_position >= 0 else None
+    channel = orch.session.current_channel or None
+
     return {
         "measuring": orch.session.measuring,
         "status": orch.session.status,
         "detail": orch.session.status_detail,
-        "position_id": orch.session.current_position if orch.session.measuring else None,
-        "channel": orch.session.current_channel if orch.session.measuring else None,
+        "position_id": position_id,
+        "channel": channel,
         "level_rms_db": orch.session.level_rms_db,
         "level_peak_db": orch.session.level_peak_db,
         "level_clipped": orch.session.level_clipped,

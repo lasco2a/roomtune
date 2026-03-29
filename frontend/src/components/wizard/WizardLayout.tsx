@@ -34,9 +34,21 @@ export function WizardLayout() {
     }
   }, [currentStep]);
 
+  /** Navigate to a step via the top nav — only allow completed or current steps. */
+  const handleStepClick = useCallback(
+    (step: WizardStep) => {
+      const targetIdx = WIZARD_STEPS.findIndex((s) => s.key === step);
+      const currentIdx = WIZARD_STEPS.findIndex((s) => s.key === currentStep);
+      // Allow clicking completed steps or the current step
+      if (targetIdx <= currentIdx || completedSteps.has(step)) {
+        setCurrentStep(step);
+      }
+    },
+    [currentStep, completedSteps],
+  );
+
   const currentIndex = WIZARD_STEPS.findIndex((s) => s.key === currentStep);
   const isFirst = currentIndex === 0;
-  const isLast = currentIndex === WIZARD_STEPS.length - 1;
 
   const stepComponent = () => {
     switch (currentStep) {
@@ -74,7 +86,7 @@ export function WizardLayout() {
       <div className="border-b border-gray-800">
         <WizardNav
           currentStep={currentStep}
-          onStepClick={setCurrentStep}
+          onStepClick={handleStepClick}
           completedSteps={completedSteps}
         />
       </div>
@@ -82,7 +94,7 @@ export function WizardLayout() {
       {/* Step content */}
       <main className="flex-1 overflow-y-auto p-6">{stepComponent()}</main>
 
-      {/* Footer navigation */}
+      {/* Footer — Back button only; each step has its own Continue button */}
       <footer className="flex items-center justify-between border-t border-gray-800 px-6 py-3">
         <Button variant="ghost" onClick={goPrev} disabled={isFirst}>
           Back
@@ -90,13 +102,7 @@ export function WizardLayout() {
         <span className="text-xs text-gray-500">
           Step {currentIndex + 1} of {WIZARD_STEPS.length}
         </span>
-        {!isLast ? (
-          <Button onClick={goNext}>Next</Button>
-        ) : (
-          <Button variant="secondary" disabled>
-            Done
-          </Button>
-        )}
+        <div className="w-20" /> {/* Spacer to keep footer centered */}
       </footer>
     </div>
   );

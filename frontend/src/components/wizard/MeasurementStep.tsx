@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Mic, Play, Square, CheckCircle2, Circle, RotateCcw, Loader2 } from 'lucide-react';
+import { Mic, Play, Square, CheckCircle2, Circle, RotateCcw, Loader2, ChevronRight, ArrowRight } from 'lucide-react';
 import { Card, Button, LevelMeter } from '../ui';
 import { useMeasurement } from '../../hooks/useMeasurement';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -35,7 +35,6 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
     markComplete,
     resetAll,
     completedCount,
-    allDone,
   } = useMeasurement();
 
   const [rmsDb, setRmsDb] = useState(-60);
@@ -43,6 +42,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const [clipped, setClipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [autoStatus, setAutoStatus] = useState<MeasurementStatus | null>(null);
+  const [justCompleted, setJustCompleted] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useWebSocket({
@@ -81,22 +81,18 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
           setMeasuring(false);
+          setJustCompleted(true);
 
-          // Mark position complete
-          markComplete(status.position_id ?? 0, {
-            position_id: status.position_id ?? 0,
+          // Mark position complete using the position_id from the backend
+          const posId = status.position_id ?? currentPosition;
+          markComplete(posId, {
+            position_id: posId,
             channel: (status.channel ?? currentChannel) as Channel,
             peak_db: status.level_peak_db,
             clipped: status.level_clipped,
             duration: 6,
           });
           wizard.setMeasurementCount(completedCount + 1);
-
-          // Auto-advance to next incomplete position
-          const nextIncomplete = positions.find(
-            (p) => !p.completed && p.id !== (status.position_id ?? 0),
-          );
-          if (nextIncomplete) setCurrentPosition(nextIncomplete.id);
         }
 
         // Handle error
@@ -111,12 +107,12 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
       }
     }, 500);
   }, [
+    currentPosition,
     currentChannel,
     completedCount,
     positions,
     setMeasuring,
     markComplete,
-    setCurrentPosition,
     wizard,
   ]);
 
@@ -124,6 +120,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const handleStart = useCallback(async () => {
     setError(null);
     setAutoStatus(null);
+    setJustCompleted(false);
 
     try {
       // Ensure backend has the current RPi config
@@ -157,12 +154,25 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
     setAutoStatus(null);
   }, [setMeasuring]);
 
+  /** Advance to the next incomplete position after a measurement. */
+  const handleNextPosition = useCallback(() => {
+    const nextIncomplete = positions.find(
+      (p) => !p.completed && p.id !== currentPosition,
+    );
+    if (nextIncomplete) {
+      setCurrentPosition(nextIncomplete.id);
+      setAutoStatus(null);
+      setJustCompleted(false);
+    }
+  }, [positions, currentPosition, setCurrentPosition]);
+
   const handleReset = useCallback(async () => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = null;
     resetAll();
     wizard.setMeasurementCount(0);
     setAutoStatus(null);
+    setJustCompleted(false);
     setError(null);
     try {
       await fetch('/api/measurement/reset', { method: 'POST' });
@@ -175,6 +185,8 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
   const statusPhase = autoStatus?.status ?? 'idle';
   const statusLabel = STATUS_LABELS[statusPhase] ?? autoStatus?.detail ?? '';
   const isRunning = measuring && statusPhase !== 'complete' && statusPhase !== 'error';
+  const canContinue = completedCount >= 1; // At least the primary seat
+  const hasNextPosition = positions.some((p) => !p.completed && p.id !== currentPosition);
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -182,7 +194,7 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
         <h2 className="text-2xl font-bold text-gray-100">Measurement</h2>
         <p className="mt-1 text-gray-400">
           Position the microphone and measure each listening position. Point the UMIK-1 straight up
-          at the ceiling. Each measurement runs automatically: sweep upload, playback, and recording.
+          at the ceiling. The primary seat is required; additional positions improve accuracy.
         </p>
       </div>
 
@@ -195,15 +207,23 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
           {positions.map((pos) => (
             <button
               key={pos.id}
-              onClick={() => !measuring && setCurrentPosition(pos.id)}
+              onClick={() => {
+                if (!measuring) {
+                  setCurrentPosition(pos.id);
+                  setAutoStatus(null);
+                  setJustCompleted(false);
+                }
+              }}
               disabled={measuring}
               className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors
-                ${pos.id === currentPosition ? 'bg-indigo-600/20 text-indigo-300' : 'hover:bg-gray-800/60 text-gray-400'}
+                ${pos.id === currentPosition ? 'bg-indigo-600/20 ring-1 ring-indigo-500/40 text-indigo-300' : 'hover:bg-gray-800/60 text-gray-400'}
                 ${measuring ? 'cursor-not-allowed opacity-60' : ''}
               `}
             >
               {pos.completed ? (
                 <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+              ) : pos.id === currentPosition && measuring ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo-400" />
               ) : (
                 <Circle className="h-4 w-4 shrink-0 text-gray-600" />
               )}
@@ -294,31 +314,65 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
                       );
                     })}
                   </div>
+                  <div className="mt-2 flex justify-between text-xs text-gray-500">
+                    <span>Upload</span>
+                    <span>Record</span>
+                    <span>Play</span>
+                    <span>Process</span>
+                  </div>
                 </div>
               )}
 
-              {/* Start/Stop buttons */}
-              <div className="flex gap-3">
-                {!measuring ? (
-                  <Button onClick={handleStart} disabled={currentPos.completed} className="flex-1">
-                    <Play className="h-4 w-4" />
-                    {currentPos.completed ? 'Completed' : 'Start Measurement'}
-                  </Button>
-                ) : (
-                  <Button variant="danger" onClick={handleStop} className="flex-1">
-                    <Square className="h-4 w-4" />
-                    Cancel
-                  </Button>
-                )}
-              </div>
+              {/* Completion state — show success and next action */}
+              {!measuring && justCompleted && autoStatus?.status === 'complete' && (
+                <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-emerald-300">
+                        {currentPos.label} measured successfully
+                      </p>
+                      <p className="mt-0.5 text-xs text-gray-400">{autoStatus.detail}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    {hasNextPosition && (
+                      <Button size="sm" onClick={handleNextPosition} className="flex-1">
+                        <ArrowRight className="h-3 w-3" />
+                        Measure Next Position
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant={hasNextPosition ? 'secondary' : 'primary'}
+                      onClick={onComplete}
+                      className={hasNextPosition ? '' : 'flex-1'}
+                    >
+                      <ChevronRight className="h-3 w-3" />
+                      {hasNextPosition ? 'Skip to Analysis' : 'Continue to Analysis'}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
-              {/* Status after completion */}
-              {!measuring && autoStatus?.status === 'complete' && (
-                <div className="mt-3 flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                  <span className="text-sm text-emerald-400">
-                    {autoStatus.detail}
-                  </span>
+              {/* Start/Stop buttons — only show when not in completion state */}
+              {!(justCompleted && autoStatus?.status === 'complete' && !measuring) && (
+                <div className="flex gap-3">
+                  {!measuring ? (
+                    <Button
+                      onClick={handleStart}
+                      disabled={currentPos.completed}
+                      className="flex-1"
+                    >
+                      <Play className="h-4 w-4" />
+                      {currentPos.completed ? 'Already Measured' : 'Start Measurement'}
+                    </Button>
+                  ) : (
+                    <Button variant="danger" onClick={handleStop} className="flex-1">
+                      <Square className="h-4 w-4" />
+                      Cancel
+                    </Button>
+                  )}
                 </div>
               )}
             </Card>
@@ -332,8 +386,16 @@ export function MeasurementStep({ onComplete }: MeasurementStepProps) {
         </div>
       </div>
 
-      <div className="flex justify-end">
-        <Button onClick={onComplete} disabled={!allDone}>
+      {/* Bottom: Continue button — enabled after at least 1 measurement */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500">
+          {completedCount === 0
+            ? 'Measure at least the primary seat to continue'
+            : completedCount < positions.length
+              ? `${completedCount}/${positions.length} positions measured — you can continue or add more`
+              : `All ${positions.length} positions measured`}
+        </p>
+        <Button onClick={onComplete} disabled={!canContinue}>
           Continue to Analysis
         </Button>
       </div>
