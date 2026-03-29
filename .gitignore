@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+
+# Node (frontend)
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Measurement data (large WAV files)
+*.wav
+measurements/
+
+# Logs
+*.log

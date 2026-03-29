@@ -1,0 +1,25 @@
+# Core
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+
+# Audio
+sounddevice>=0.4.6
+numpy>=1.26.0
+scipy>=1.11.0
+
+# Visualization (backend chart generation)
+matplotlib>=3.8.0
+
+# Config
+pyyaml>=6.0
+
+# CamillaDSP websocket
+websocket-client>=1.6.0
+
+# RPi SSH/SCP
+paramiko>=3.4.0
+
+# FastAPI extras
+python-multipart>=0.0.6
+pydantic>=2.5.0
