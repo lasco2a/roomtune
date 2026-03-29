@@ -22,7 +22,7 @@ logger = logging.getLogger("roomtune.recorder")
 class Recording:
     """Result of a recording session."""
 
-    data: np.ndarray = field(repr=False)  # shape (samples, channels), float64
+    data: np.ndarray = field(repr=False)  # shape (samples, channels), float32
     sample_rate: int = 48000
     channels: int = 1
     duration: float = 0.0
@@ -50,7 +50,7 @@ class Recorder:
         device_index: int | None = None,
         sample_rate: int = 48000,
         channels: int = 1,
-        dtype: str = "float64",
+        dtype: str = "float32",
     ) -> None:
         self.device_index = device_index
         self.sample_rate = sample_rate
@@ -166,7 +166,7 @@ class Recorder:
             if self._buffer:
                 data = np.concatenate(self._buffer, axis=0)
             else:
-                data = np.zeros((0, self.channels), dtype=np.float64)
+                data = np.zeros((0, self.channels), dtype=np.float32)
             self._buffer.clear()
 
         duration = len(data) / self.sample_rate
