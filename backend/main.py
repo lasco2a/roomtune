@@ -31,9 +31,9 @@ class AppState:
         self.connected_ws: list[WebSocket] = []
         # RPi connection config — set by the Setup step, used everywhere
         self.rpi_config: dict = {
-            "host": "moode.local",
+            "host": "10.1.1.85",
             "port": 22,
-            "username": "pi",
+            "username": "lasco",
             "password": None,
             "key_path": None,
         }
@@ -223,7 +223,7 @@ async def broadcast(event: dict) -> None:
 def start():
     """CLI entry-point (roomtune command)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8001, reload=True)
 
 
 if __name__ == "__main__":

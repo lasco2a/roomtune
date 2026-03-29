@@ -23,10 +23,11 @@ class MPDClient:
     adding a file to the queue, playing, stopping, and checking status.
     """
 
-    def __init__(self, host: str = "moode.local", port: int = MPD_PORT) -> None:
+    def __init__(self, host: str = "10.1.1.85", port: int = MPD_PORT) -> None:
         self.host = host
         self.port = port
         self._sock: socket.socket | None = None
+        self._buf: str = ""  # line buffer for incremental reads
 
     # ------------------------------------------------------------------
     # Connection
@@ -35,6 +36,7 @@ class MPDClient:
     def connect(self, timeout: float = 5.0) -> str:
         """Connect to MPD and return the version banner."""
         self._sock = socket.create_connection((self.host, self.port), timeout=timeout)
+        self._buf = ""
         banner = self._readline()
         if not banner.startswith("OK MPD"):
             raise RuntimeError(f"Unexpected MPD banner: {banner}")
@@ -121,15 +123,16 @@ class MPDClient:
         self._sock.sendall((data + "\n").encode("utf-8"))
 
     def _readline(self) -> str:
+        """Read a single line from the socket, buffering any excess data."""
         if not self._sock:
             raise RuntimeError("Not connected to MPD")
-        buf = b""
-        while not buf.endswith(b"\n"):
+        while "\n" not in self._buf:
             chunk = self._sock.recv(4096)
             if not chunk:
                 raise ConnectionError("MPD connection closed")
-            buf += chunk
-        return buf.decode("utf-8", errors="replace")
+            self._buf += chunk.decode("utf-8", errors="replace")
+        line, self._buf = self._buf.split("\n", 1)
+        return line + "\n"
 
     def _read_response(self) -> list[str]:
         """Read lines until OK or ACK."""

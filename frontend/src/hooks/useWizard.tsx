@@ -60,9 +60,9 @@ const WizardContext = createContext<WizardContextType | null>(null);
 // ---------------------------------------------------------------------------
 
 const DEFAULT_RPI_CONFIG: RPiConfig = {
-  host: 'moode.local',
+  host: '10.1.1.85',
   port: 22,
-  username: 'pi',
+  username: 'lasco',
   password: '',
 };
 

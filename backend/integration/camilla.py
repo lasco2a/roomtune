@@ -90,7 +90,7 @@ class CamillaDSPConfig:
 class CamillaDSPClient:
     """WebSocket client for CamillaDSP's control API."""
 
-    def __init__(self, host: str = "moode.local", port: int = DEFAULT_WS_PORT) -> None:
+    def __init__(self, host: str = "10.1.1.85", port: int = DEFAULT_WS_PORT) -> None:
         self.host = host
         self.port = port
         self._ws: websocket.WebSocket | None = None

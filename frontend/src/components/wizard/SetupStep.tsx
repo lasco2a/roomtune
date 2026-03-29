@@ -55,13 +55,9 @@ export function SetupStep({ onComplete }: SetupStepProps) {
   };
 
   const handleContinue = async () => {
-    // Tell the backend the RPi host so EQ apply knows where to connect
+    // Send full RPi config to backend
     try {
-      await fetch('/api/config/rpi-host', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: wizard.rpiConfig.host }),
-      });
+      await api.setRpiConfig(wizard.rpiConfig);
     } catch {
       // non-critical
     }

@@ -8,8 +8,8 @@ echo "=== RoomTune ==="
 echo ""
 
 # Start backend
-echo "Starting backend (FastAPI) on http://localhost:8000 …"
-(cd "$SCRIPT_DIR" && python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload) &
+echo "Starting backend (FastAPI) on http://localhost:8001 …"
+(cd "$SCRIPT_DIR" && python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload) &
 BACKEND_PID=$!
 
 # Start frontend (if node_modules exist)

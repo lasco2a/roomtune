@@ -21,8 +21,11 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
     try {
       const res = await api.connectionTest(wizard.rpiConfig);
       setResult(res);
-      const allOk = res.rpi.connected && res.camilladsp.connected && res.mpd.connected;
-      wizard.setConnectionOk(allOk);
+      // Only SSH + MPD are required for measurement.
+      // CamillaDSP is only needed at Step 6 (Apply EQ) and is often
+      // intentionally off during measurement.
+      const essentialOk = res.rpi.connected && res.mpd.connected;
+      wizard.setConnectionOk(essentialOk);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Connection test failed');
     } finally {
@@ -30,20 +33,26 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
     }
   };
 
-  const allConnected = result?.rpi.connected && result?.camilladsp.connected && result?.mpd.connected;
+  // SSH + MPD required; CamillaDSP optional
+  const canProceed = result?.rpi.connected && result?.mpd.connected;
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-gray-100">Connection Test</h2>
         <p className="mt-1 text-gray-400">
-          Verify connectivity to the Raspberry Pi, CamillaDSP, and MPD.
+          Verify connectivity to the Raspberry Pi and MPD. CamillaDSP is only needed when applying
+          EQ filters (step 6).
         </p>
       </div>
 
       <div className="rounded-lg bg-gray-800/40 px-4 py-2 text-sm text-gray-400">
-        Testing connection to <span className="font-mono text-gray-200">{wizard.rpiConfig.host}</span> as{' '}
+        Testing connection to{' '}
+        <span className="font-mono text-gray-200">{wizard.rpiConfig.host}</span> as{' '}
         <span className="font-mono text-gray-200">{wizard.rpiConfig.username}</span>
+        {!wizard.rpiConfig.password && (
+          <span className="ml-2 text-gray-500">(using SSH key)</span>
+        )}
       </div>
 
       <div className="grid gap-4">
@@ -68,31 +77,6 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
           </div>
         </Card>
 
-        {/* CamillaDSP */}
-        <Card>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Server className="h-5 w-5 text-indigo-400" />
-              <div>
-                <p className="font-medium text-gray-200">CamillaDSP</p>
-                <p className="text-sm text-gray-400">
-                  {result?.camilladsp.connected
-                    ? `Running (${result.camilladsp.state})`
-                    : result?.camilladsp.error || 'Not tested'}
-                </p>
-              </div>
-            </div>
-            <StatusBadge
-              status={
-                result === null ? 'pending' : result.camilladsp.connected ? 'ok' : 'error'
-              }
-              label={
-                result === null ? 'Pending' : result.camilladsp.connected ? 'OK' : 'Failed'
-              }
-            />
-          </div>
-        </Card>
-
         {/* MPD */}
         <Card>
           <div className="flex items-center justify-between">
@@ -110,6 +94,41 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
             <StatusBadge
               status={result === null ? 'pending' : result.mpd.connected ? 'ok' : 'error'}
               label={result === null ? 'Pending' : result.mpd.connected ? 'OK' : 'Failed'}
+            />
+          </div>
+        </Card>
+
+        {/* CamillaDSP — optional */}
+        <Card>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Server className="h-5 w-5 text-gray-500" />
+              <div>
+                <p className="font-medium text-gray-200">CamillaDSP</p>
+                <p className="text-sm text-gray-400">
+                  {result?.camilladsp.connected
+                    ? `Running (${result.camilladsp.state})`
+                    : result
+                      ? 'Not running — only needed for Apply EQ (step 6)'
+                      : 'Not tested'}
+                </p>
+              </div>
+            </div>
+            <StatusBadge
+              status={
+                result === null
+                  ? 'pending'
+                  : result.camilladsp.connected
+                    ? 'ok'
+                    : 'warn'
+              }
+              label={
+                result === null
+                  ? 'Pending'
+                  : result.camilladsp.connected
+                    ? 'OK'
+                    : 'Optional'
+              }
             />
           </div>
         </Card>
@@ -132,7 +151,7 @@ export function ConnectionStep({ onComplete }: ConnectionStepProps) {
             'Run Connection Test'
           )}
         </Button>
-        <Button onClick={onComplete} disabled={!allConnected}>
+        <Button onClick={onComplete} disabled={!canProceed}>
           Continue to Measurement
         </Button>
       </div>

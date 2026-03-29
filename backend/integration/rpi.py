@@ -19,9 +19,9 @@ logger = logging.getLogger("roomtune.rpi")
 class RPiConfig:
     """Configuration for connecting to the Raspberry Pi."""
 
-    host: str = "moode.local"
+    host: str = "10.1.1.85"
     port: int = 22
-    username: str = "pi"
+    username: str = "lasco"
     password: str | None = None
     key_path: str | None = None
 
@@ -101,27 +101,58 @@ class RPiConnection:
     # ------------------------------------------------------------------
 
     def upload(self, local_path: str | Path, remote_path: str) -> None:
-        """Upload a file to the RPi via SFTP."""
+        """Upload a file to the RPi via SFTP.
+
+        Falls back to /tmp + sudo mv if destination is not writable.
+        """
         if not self.is_connected:
             raise RuntimeError("Not connected to RPi")
 
         sftp = self._client.open_sftp()
         try:
             logger.info("Uploading %s → %s", local_path, remote_path)
-            sftp.put(str(local_path), remote_path)
+            try:
+                sftp.put(str(local_path), remote_path)
+            except (PermissionError, IOError) as exc:
+                if isinstance(exc, IOError) and "Permission denied" not in str(exc):
+                    raise
+                import os
+
+                tmp_path = f"/tmp/roomtune_{os.path.basename(remote_path)}"
+                logger.info("Permission denied, uploading via /tmp → sudo mv")
+                sftp.put(str(local_path), tmp_path)
+                self.exec(f"sudo mv {tmp_path} {remote_path}")
+                self.exec(f"sudo chmod 644 {remote_path}")
         finally:
             sftp.close()
 
     def upload_bytes(self, data: bytes, remote_path: str) -> None:
-        """Upload bytes directly to a remote file."""
+        """Upload bytes directly to a remote file.
+
+        If the destination directory is not writable by the SSH user,
+        the file is uploaded to /tmp first and then moved with sudo.
+        """
         if not self.is_connected:
             raise RuntimeError("Not connected to RPi")
 
         sftp = self._client.open_sftp()
         try:
             logger.info("Uploading %d bytes → %s", len(data), remote_path)
-            with sftp.open(remote_path, "wb") as f:
-                f.write(data)
+            try:
+                with sftp.open(remote_path, "wb") as f:
+                    f.write(data)
+            except (PermissionError, IOError) as exc:
+                # Destination not writable — upload to /tmp then sudo mv
+                if isinstance(exc, IOError) and "Permission denied" not in str(exc):
+                    raise
+                import os
+
+                tmp_path = f"/tmp/roomtune_{os.path.basename(remote_path)}"
+                logger.info("Permission denied, uploading via /tmp → sudo mv")
+                with sftp.open(tmp_path, "wb") as f:
+                    f.write(data)
+                self.exec(f"sudo mv {tmp_path} {remote_path}")
+                self.exec(f"sudo chmod 644 {remote_path}")
         finally:
             sftp.close()
 

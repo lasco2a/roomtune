@@ -125,9 +125,9 @@ class MeasurementOrchestrator:
         self._recorder: Recorder | None = None
         self._level_callback: callable | None = None
         # RPi config — set via configure_rpi()
-        self._rpi_host: str = "moode.local"
+        self._rpi_host: str = "10.1.1.85"
         self._rpi_port: int = 22
-        self._rpi_username: str = "pi"
+        self._rpi_username: str = "lasco"
         self._rpi_password: str | None = None
         self._rpi_key_path: str | None = None
         # Background thread for automated measurement
